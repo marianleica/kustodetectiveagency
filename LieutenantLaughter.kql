@@ -1,0 +1,50 @@
+// Context:
+
+// Imagine our agency as a buzzing beehive, like StackOverflow on steroids. We have a crazy number of cases popping up every day, each with a juicy bounty attached (yes, cold, hard cash!). And guess what? We've got thousands of Kusto Detectives scattered across the globe, all itching to pick a case and earn their detective stripes. But here's the catch: only the first detective to crack the case gets the bounty and major street cred!
+// So, your mission, should you choose to accept it, is to dig into the vast archives of our system operation logs from the legendary year 2022. You're on a quest to unearth the absolute legend, the detective with the biggest impact on our business—the one who raked in the most moolah by claiming bounties like a boss!
+// Feeling a bit rusty or want to level up your Kusto skills? No worries, my friend. We've got your back with the "Train Me" section. It's like a power-up that'll help you sharpen your Kusto-fu to tackle each case head-on. Oh, and if you stumble upon a mind-boggling case and need a little nudge, the "Hints" are there to save the day!
+// Now, strap on your detective hat, embrace the thrill, and get ready to rock this investigation. The fate of the "Most Epic Detective of the Year" rests in your hands!
+// Good luck, rookie, and remember to bring your sense of humor along for this wild ride!
+// Lieutenant Laughter
+
+// Getting the data
+
+.execute database script <|
+// Create a table for the telemetry data:
+.create table DetectiveCases(Timestamp:datetime, EventType:string, DetectiveId:string, CaseId: string, Properties:dynamic)
+//clear any previously ingested data if such exists
+.clear table DetectiveCases data
+// Load the data:
+.ingest async into table DetectiveCases (@'https://kustodetectiveagency.blob.core.windows.net/kda2start/log_00000.csv.gz')
+.ingest async into table DetectiveCases (@'https://kustodetectiveagency.blob.core.windows.net/kda2start/log_00001.csv.gz')
+.ingest into table DetectiveCases (@'https://kustodetectiveagency.blob.core.windows.net/kda2start/log_00002.csv.gz')
+
+// Scope: Who is the detective that earned most money in 2022?
+
+// Checking the data for a single variant
+
+DetectiveCases
+| where CaseId == "CASE_0351797"
+| where DetectiveId == "kvc771f890e1d2999166bf"
+| where EventType == "CaseSolved"
+// 4/19/2022, 11:19:00 PM	CaseSolved	kvc7dee13f72a3f9448280	CASE_0351797
+// 4/23/2022, 6:12:00 PM	CaseSolved	kvc32120f9a39e4b71977e	CASE_0351797
+
+// Final query
+
+DetectiveCases
+| where Timestamp between (datetime(2022-01-01T00:00:00.000Z) .. datetime(2022-12-31T23:59:59.999Z))
+| where isnotnull(Properties)
+| project CaseId, EventType, Properties.Bounty
+| join kind=leftouter (
+    DetectiveCases
+    | where Timestamp between (datetime(2022-01-01T00:00:00.000Z) .. datetime(2022-12-31T23:59:59.999Z))
+    | where EventType == "CaseSolved"
+    | project EventType, CaseId, DetectiveId, Timestamp
+    | summarize arg_min(Timestamp, DetectiveId, EventType) by CaseId
+) on CaseId
+| where isnotempty(CaseId1)
+| where EventType1 == "CaseSolved"
+| sort by Timestamp asc
+| summarize sum(todouble(Properties_Bounty)) by DetectiveId
+| sort by sum_Properties_Bounty desc
