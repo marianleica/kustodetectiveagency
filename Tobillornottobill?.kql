@@ -1,0 +1,265 @@
+.execute database script <|
+// The script takes ~20seconds to complete ingesting all the data.
+.set-or-replace Costs <| 
+    datatable(MeterType:string, Unit:string, Cost:double) [
+     'Water', 'Liter', 0.001562, 
+     'Electricity', 'kwH', 0.3016]
+.create-merge table Consumption (Timestamp:datetime , HouseholdId:string, MeterType:string, Consumed:double)
+//clear any previously ingested data if such exists
+.clear table Consumption data
+.ingest async into table Consumption (@'https://kustodetectiveagency.blob.core.windows.net/kda2c1taxbills/log_00000.csv.gz')
+.ingest async into table Consumption (@'https://kustodetectiveagency.blob.core.windows.net/kda2c1taxbills/log_00001.csv.gz')
+.ingest into table Consumption (@'https://kustodetectiveagency.blob.core.windows.net/kda2c1taxbills/log_00002.csv.gz')
+
+// The given SQL query
+SELECT SUM(Consumed * Cost) AS TotalCost 
+FROM Costs 
+JOIN Consumption ON Costs.MeterType = Consumption.MeterType
+
+// To translate an SQL query to a KQL one
+EXPLAIN
+SELECT SUM(Consumed * Cost) AS TotalCost 
+FROM Costs 
+JOIN Consumption ON Costs.MeterType = Consumption.MeterType
+
+// The query translated from SQL to KQL
+Costs
+| join kind=inner 
+(Consumption
+| project-rename ['Consumption.MeterType']=MeterType) on ($left.MeterType == $right.['Consumption.MeterType'])
+| summarize TotalCost=sum(__sql_multiply(Consumed, Cost))
+| project TotalCost
+
+// Cleaned up query
+Consumption  
+ | summarize TotalConsumed = sum(Consumed) by MeterType  
+ | lookup Costs on MeterType  
+ | extend TotalCost = TotalConsumed*Cost  
+ | summarize sum(TotalCost)
+
+// Calculate household with the highest total water consumption
+Consumption
+| where MeterType == "Water"
+| summarize sum(Consumed) by HouseholdId
+| sort by sum_Consumed
+
+// Visualize how water consumption changed over time
+Consumption  
+ | where MeterType == 'Water' 
+ | summarize WaterConsumed=sum(Consumed) by bin(Timestamp, 1d) 
+ | render timechart
+
+ Consumption  
+ | where MeterType == 'Electricity' 
+ | summarize ElectricityConsumed=sum(Consumed) by bin(Timestamp, 1d) 
+ | render timechart
+
+// Get the date that resulted in maximum `Electricity` consumption
+Consumption
+| where MeterType == "Electricity"
+| summarize sum(Consumed) by Timestamp
+| sort by sum_Consumed desc
+
+// How many electricity readings were taken in total and what was the highest value
+Consumption
+| where MeterType == "Electricity"
+| summarize Readings=count(), HighestValue=max(Consumed)
+
+// What is the total bills amount in April
+
+Consumption // looks like this
+// Timestamp	HouseholdId	MeterType	Consumed
+'// 4/9/2023, 12:00:00 AM	DTI21726335BF8D3781	Electricity	31.548945434061093
+
+Costs // looks like this
+// MeterType	Unit	Cost
+// Water	Liter	0.001562
+// Electricity	kwH	0.3016
+
+// Answer query
+Consumption
+| where monthofyear(Timestamp) == 4
+| project MeterType, Consumed
+| join kind=inner (
+    Costs
+    |  project MeterType, Cost
+) on MeterType
+| project MeterType, Consumed, Cost
+| extend ElectricityConsumption = iff(MeterType == "Electricity", Consumed, real(null)), WaterConsumption = iff(MeterType == "Water", Consumed, real(null))
+| extend ElectricityBill = ElectricityConsumption * Cost, WaterBill = WaterConsumption * Cost
+| summarize ElectricityTotal = sum(ElectricityBill), WaterTotal = sum(WaterBill)
+| extend Total = ElectricityTotal + WaterTotal
+
+// Digging tests below:
+    
+    Consumption
+    | where monthofyear(Timestamp) == 4
+    | project MeterType, Consumed
+    | lookup Costs on MeterType
+    | extend Bill = Consumed * Cost
+    | summarize Total = sum(Bill)
+    
+    Consumption
+    | lookup Costs on MeterType
+    | extend Bill = Consumed * Cost
+    | summarize Total = sum(Bill)
+    
+    Consumption
+    | summarize Count = count() by Timestamp, HouseholdId, MeterType
+    | where Count > 1
+    | distinct HouseholdId
+    
+    Consumption
+    | summarize recordsCount = count() by HouseholdId
+    | where recordsCount <= 60
+    | join kind=inner (
+        Consumption
+    ) on HouseholdId
+    | lookup Costs on MeterType
+    | extend Bill = Consumed * Cost
+    | summarize Total = sum(Bill)
+    
+    Consumption
+    | summarize recordsCount = count() by HouseholdId
+    | where recordsCount <= 60
+    | join kind=inner (
+        Consumption
+    ) on HouseholdId
+    | join kind=inner (
+        Costs
+        |  project MeterType, Cost
+    ) on MeterType
+    | project MeterType, Consumed, Cost
+    | extend ElectricityConsumption = iff(MeterType == "Electricity", Consumed, real(null)), WaterConsumption = iff(MeterType == "Water", Consumed, real(null))
+    | extend ElectricityBill = ElectricityConsumption * Cost, WaterBill = WaterConsumption * Cost
+    | summarize ElectricityTotal = sum(ElectricityBill), WaterTotal = sum(WaterBill)
+    | extend Total = ElectricityTotal + WaterTotal
+    
+    Consumption
+    | summarize recordsCount = count() by Consumed
+    | where recordsCount == 1
+    | join kind=leftouter (
+        Consumption
+    ) on Consumed
+    | lookup Costs on MeterType
+    | extend Bill = Consumed * Cost
+    | summarize Total = sum(Bill)
+    
+    Consumption
+    | summarize recordsCount = count() by Consumed
+    | where recordsCount == 1
+    | join kind=leftouter (
+        Consumption
+    ) on Consumed
+    | join kind=inner (
+        Costs
+        |  project MeterType, Cost
+    ) on MeterType
+    | project MeterType, Consumed, Cost
+    | extend ElectricityConsumption = iff(MeterType == "Electricity", Consumed, real(null)), WaterConsumption = iff(MeterType == "Water", Consumed, real(null))
+    | extend ElectricityBill = ElectricityConsumption * Cost, WaterBill = WaterConsumption * Cost
+    | summarize ElectricityTotal = sum(ElectricityBill), WaterTotal = sum(WaterBill)
+    | extend Total = ElectricityTotal + WaterTotal
+    
+    Consumption
+    | summarize recordsCount1 = count() by Consumed
+    | where recordsCount1 == 1
+    | join kind=leftouter (
+        Consumption
+    ) on Consumed
+    | summarize recordsCount2 = count() by HouseholdId
+    | where recordsCount2 <= 60
+    | join kind=leftouter (
+        Consumption
+    ) on HouseholdId
+    | lookup Costs on MeterType
+    | extend Bill = Consumed * Cost
+    | summarize Total = sum(Bill)
+    
+    Consumption
+    | summarize recordsCount1 = count() by Consumed
+    | where recordsCount1 == 1
+    | join kind=leftouter (
+        Consumption
+    ) on Consumed
+    | summarize recordsCount2 = count() by HouseholdId
+    | where recordsCount2 <= 60
+    | join kind=leftouter (
+        Consumption
+    ) on HouseholdId
+    | join kind=inner (
+        Costs
+        |  project MeterType, Cost
+    ) on MeterType
+    | project MeterType, Consumed, Cost
+    | extend ElectricityConsumption = iff(MeterType == "Electricity", Consumed, real(null)), WaterConsumption = iff(MeterType == "Water", Consumed, real(null))
+    | extend ElectricityBill = ElectricityConsumption * Cost, WaterBill = WaterConsumption * Cost
+    | summarize ElectricityTotal = sum(ElectricityBill), WaterTotal = sum(WaterBill)
+    | extend Total = ElectricityTotal + WaterTotal
+    
+    Consumption
+    | summarize recordsCount1 = count() by Consumed
+    | where recordsCount1 == 1
+    | join kind=leftouter (
+        Consumption
+    ) on Consumed
+    | summarize recordsCount2 = count() by HouseholdId
+    | where recordsCount2 <= 60
+    | join kind=leftouter (
+        Consumption
+    ) on HouseholdId
+    | summarize recordsCount3 = count() by Consumed
+    | where recordsCount3 == 1
+    | join kind=leftouter (
+        Consumption
+    ) on Consumed
+    | join kind=inner (
+        Costs
+        |  project MeterType, Cost
+    ) on MeterType
+    | project MeterType, Consumed, Cost
+    | extend ElectricityConsumption = iff(MeterType == "Electricity", Consumed, real(null)), WaterConsumption = iff(MeterType == "Water", Consumed, real(null))
+    | extend ElectricityBill = ElectricityConsumption * Cost, WaterBill = WaterConsumption * Cost
+    | summarize ElectricityTotal = sum(ElectricityBill), WaterTotal = sum(WaterBill)
+    | extend Total = ElectricityTotal + WaterTotal
+    
+    Consumption
+    | summarize arg_max(Timestamp, *) by HouseholdId, MeterType, Consumed
+    | lookup Costs on MeterType
+    | extend Bill = Consumed * Cost
+    | summarize Total = sum(Bill)
+    
+    Consumption
+    | summarize arg_max(Timestamp, *) by HouseholdId, MeterType, Consumed
+    | join kind=leftouter (
+        Costs
+        |  project MeterType, Cost
+    ) on MeterType
+    | project MeterType, Consumed, Cost
+    | extend ElectricityConsumption = iff(MeterType == "Electricity", Consumed, real(null)), WaterConsumption = iff(MeterType == "Water", Consumed, real(null))
+    | extend ElectricityBill = ElectricityConsumption * Cost, WaterBill = WaterConsumption * Cost
+    | summarize ElectricityTotal = sum(ElectricityBill), WaterTotal = sum(WaterBill)
+    | extend Total = ElectricityTotal + WaterTotal
+    
+    Consumption
+    | summarize arg_max(Timestamp, *) by HouseholdId, MeterType, Consumed
+    | join kind=leftouter (
+        Costs
+        |  project MeterType, Cost
+    ) on MeterType
+    | summarize arg_max(Timestamp, *) by HouseholdId, MeterType, Consumed, Cost
+    | project MeterType, Consumed, Cost
+    | extend ElectricityConsumption = iff(MeterType == "Electricity", Consumed, real(null)), WaterConsumption = iff(MeterType == "Water", Consumed, real(null))
+    | extend ElectricityBill = ElectricityConsumption * Cost, WaterBill = WaterConsumption * Cost
+    | summarize ElectricityTotal = sum(ElectricityBill), WaterTotal = sum(WaterBill)
+    | extend Total = ElectricityTotal + WaterTotal
+
+// Looks like there are both duplicates and negative value bills, let's eliminate those
+// Final query
+Consumption
+| summarize arg_max(Timestamp, *) by HouseholdId, MeterType, Consumed
+| distinct *
+| where Consumed >= 0
+| lookup Costs on MeterType
+| extend Bill = Consumed * Cost
+| summarize Total = sum(Bill)
