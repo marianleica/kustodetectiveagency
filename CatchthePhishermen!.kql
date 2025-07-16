@@ -1,0 +1,125 @@
+.execute database script <|
+.create-merge table PhoneCalls (Timestamp:datetime, EventType:string, CallConnectionId:string, Properties:dynamic)
+//clear any previously ingested data if such exists
+.clear table PhoneCalls data
+.ingest async into table PhoneCalls (@'https://kustodetectiveagency.blob.core.windows.net/kda2c2phonecalls/log_00000.csv.gz')
+.ingest async into table PhoneCalls (@'https://kustodetectiveagency.blob.core.windows.net/kda2c2phonecalls/log_00001.csv.gz')
+// Last command is running sync, so when it finishes the data is already ingested.
+// It can take about 1min to run.
+.ingest into table PhoneCalls (@'https://kustodetectiveagency.blob.core.windows.net/kda2c2phonecalls/log_00002.csv.gz')
+
+PhoneCalls
+
+PhoneCalls
+| take 100
+
+PhoneCalls 
+| where EventType == 'Connect' 
+| extend Origin=tostring(Properties.Origin), Destination=tostring(Properties.Destination), Hidden=tobool(Properties.IsHidden) 
+| take 10
+
+// The most calls oringinating from a non-hidden number
+PhoneCalls 
+| where EventType == 'Connect' 
+| extend Origin=tostring(Properties.Origin), Destination=tostring(Properties.Destination), Hidden=tobool(Properties.IsHidden) 
+| where Properties has "false"
+| summarize count() by Origin
+| sort by count_ desc
+
+// or
+PhoneCalls 
+| where EventType == 'Connect' 
+| where tobool(Properties.IsHidden) == false or Properties !has 'IsHidden'
+| summarize Count=count() by Phone=tostring(Properties.Origin) 
+| top 1 by Count
+
+// Checking avg and percentile median
+PhoneCalls 
+| where EventType =='Connect' 
+| summarize calls=count() by bin(Timestamp, 1h) 
+| summarize avg(calls), percentile(calls, 50)
+
+// And a visual
+PhoneCalls 
+| where EventType =='Connect' 
+| summarize calls=count() by bin(Timestamp, 1h) 
+| render timechart 
+
+// How many calls did Sally Sunshine (phone number 06309267053) receive and hang up on?
+PhoneCalls 
+| where EventType == 'Connect'
+| where Properties.Destination == '06309267053' 
+| join kind=inner
+    (PhoneCalls
+    | where EventType == 'Disconnect'
+    | extend DisconnectProperties = Properties) 
+    on CallConnectionId 
+| where DisconnectProperties.DisconnectedBy == 'Destination'
+| count
+
+// What phone number is being used for phishing calls
+
+// Most origin calls
+PhoneCalls
+| where EventType == 'Connect'
+| extend Origin=tostring(Properties.Origin), Destination=tostring(Properties.Destination), Hidden=tobool(Properties.IsHidden)
+| summarize count()by Origin
+| sort by count_ desc 
+// Origin	count_
+// 06836757512	590
+// 06749360920	580
+// 06480293412	380
+// 06688366133	378
+// 06660244895	377
+
+// most hidden number origin calls
+PhoneCalls
+| where EventType == 'Connect'
+| extend Origin=tostring(Properties.Origin), Destination=tostring(Properties.Destination), Hidden=tobool(Properties.IsHidden)
+| where Hidden == true
+| summarize count()by Origin
+| sort by count_ desc 
+// Origin	count_
+// 06749360920	257 // reappeared
+// 06836757512	248 // reappeared
+// 06784884765	248
+// 06422797186	164
+// 06632227502	162
+
+PhoneCalls
+| where EventType == 'Connect'
+| extend Origin=tostring(Properties.Origin), Destination=tostring(Properties.Destination), Hidden=tobool(Properties.IsHidden)
+| summarize count() by bin(Timestamp, 1h) 
+| render timechart
+
+PhoneCalls
+| where EventType == "Connect"
+| extend OriginPhone = tostring(Properties.Origin), DestinationPhone = tostring(Properties.Destination)
+| summarize CallCount = count() by bin(Timestamp, 1h), OriginPhone
+| sort by CallCount desc
+
+PhoneCalls
+| where EventType == "Connect"
+| extend OriginPhone = tostring(Properties.Origin), DestinationPhone = tostring(Properties.Destination)
+| summarize DistinctDestinations = dcount(DestinationPhone) by OriginPhone
+| top 5 by DistinctDestinations desc
+// OriginPhone	DistinctDestinations
+// 06836757512	590
+// 06749360920	578
+// 06515410014	344
+// 06480293412	342
+// 06906813654	333
+
+PhoneCalls
+| where EventType == "Connect"
+| extend OriginPhone = tostring(Properties.Origin), DestinationPhone = tostring(Properties.Destination), Hidden = tobool(Properties.IsHidden)
+| where Hidden == true
+| summarize DistinctDestinations = dcount(DestinationPhone) by OriginPhone
+| top 5 by DistinctDestinations desc
+// 06749360920	256
+// 06836757512	248
+// 06784884765	248
+// 06422797186	163
+// 06632227502	162
+
+// Confirmed with 06784884765
